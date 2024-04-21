@@ -1,5 +1,11 @@
 # M3U8 Downloader
+
 ---
+
+- Support decryption AES-128
+- Progress bar display
+- Multithreading,Default 20 threads
+
 ## Usage
 
 ---
@@ -15,11 +21,5 @@ options:
   --proxy PROXY    Proxy server address (optional)
   --output OUTPUT  Output directory for downloaded files (optional)
 ```
+
 `python main.py --url http://xxxx/index.m3u8`
-
-## Features
-
----
-
-- Create a directory with m3u8 file name by default
-- 20 threads are used for downloading by default
