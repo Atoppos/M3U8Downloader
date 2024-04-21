@@ -1,6 +1,5 @@
 import argparse
 import binascii
-from functools import partial
 import logging
 import os
 import re
