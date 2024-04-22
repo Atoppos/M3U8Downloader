@@ -13,8 +13,11 @@ from tqdm import tqdm
 MAX_RETRIES = 5
 RETRY_DELAY = 1
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
+
 
 class m3u8Download:
 
@@ -22,7 +25,7 @@ class m3u8Download:
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
         }
-        self.proxies = None 
+        self.proxies = None
         self.url = url
         self.base_url = url.rsplit("/", 1)[0] + "/"
         self.base_path = None
@@ -41,7 +44,7 @@ class m3u8Download:
         response = requests.get(self.url, headers=self.headers, proxies=self.proxies)
         response.raise_for_status()
         m3u8_content = response.text
-        output_path = os.path.join(self.base_path, self.base_path+'.m3u8')
+        output_path = os.path.join(self.base_path, self.base_path + ".m3u8")
         with open(output_path, "w") as f:
             f.write(m3u8_content)
         return output_path
@@ -51,7 +54,7 @@ class m3u8Download:
             url, headers=self.headers, proxies=self.proxies, stream=True
         )
         response.raise_for_status()
-        match = re.search(r'/([^/?]+)(?:\?.*)?$', url)
+        match = re.search(r"/([^/?]+)(?:\?.*)?$", url)
         match.group(1)
         output_path = os.path.join(self.base_path, match.group(1))
         with open(output_path, "wb") as f:
@@ -59,7 +62,7 @@ class m3u8Download:
                 if chunk:
                     f.write(chunk)
         return output_path
-    
+
     def parse_m3u8_file(self, file_path):
         encryption_info = {}
         ts_files = []
@@ -68,33 +71,37 @@ class m3u8Download:
             for line in lines:
                 line = line.strip()
                 if line.startswith("#EXT-X-KEY"):
-                   match = re.search(r'METHOD=(.*?),URI="(.*?)",IV=(.*?)$', line)
-                   if match:
-                    method = match.group(1)
-                    uri = match.group(2)
-                    iv = match.group(3)
-                    encryption_info["method"] = method
-                    encryption_info["uri"] = uri
-                    encryption_info["iv"] = iv[2:] 
+                    match = re.search(r'METHOD=(.*?),URI="(.*?)",IV=(.*?)$', line)
+                    if match:
+                        method = match.group(1)
+                        uri = match.group(2)
+                        iv = match.group(3)
+                        encryption_info["method"] = method
+                        encryption_info["uri"] = uri
+                        encryption_info["iv"] = iv[2:]
                 if not line.startswith("#"):
                     ts_files.append(line)
         return encryption_info, ts_files
 
-    def download_and_decrypt(self, ts_file, key, iv):
+    def download_and_decrypt(self, ts_file, key, iv, decrypt_flag):
         retries = 0
         while retries < MAX_RETRIES:
             try:
                 if self.cancel_download:
                     return None
                 if ts_file.startswith("http://") or ts_file.startswith("https://"):
-                    url=ts_file
+                    url = ts_file
                 else:
                     url = self.base_url + ts_file
                 response = requests.get(url, headers=self.headers, proxies=self.proxies)
-                encrypted_data = response.content
-                cipher = AES.new(key, AES.MODE_CBC, iv)
-                decrypted_data = cipher.decrypt(encrypted_data)
-                return decrypted_data
+                if decrypt_flag:
+                    encrypted_data = response.content
+                    cipher = AES.new(key, AES.MODE_CBC, iv)
+                    decrypted_data = cipher.decrypt(encrypted_data)
+                    return decrypted_data
+                else:
+                    return response.content
+
             except Exception as exc:
                 logger.error(f"{ts_file} generated an exception: {exc}")
                 retries += 1
@@ -112,6 +119,18 @@ class m3u8Download:
         if self.executor:
             self.executor.shutdown(wait=False)
 
+    def parse_file_name(self,url):
+        if url.startswith("http://") or url.startswith("https://"):
+            match = re.match(r"^.*?/([^/?]+)(?:\?.*)?$", url)
+            return match.group(1)
+        else:
+            if url.endswith('.ts'):
+                return url
+            else:
+                match = re.match(r'([^/?]+\.ts)', url)
+                return match.group(1)
+
+
     def download(self, out_path=None):
         signal.signal(signal.SIGINT, self.cancel_download_handler)
         if out_path is None:
@@ -122,21 +141,32 @@ class m3u8Download:
         self.base_path = out_path
         self.m3u8_path = self.download_m3u8_file()
         encryption_info, ts_files = self.parse_m3u8_file(self.m3u8_path)
-        if encryption_info['uri'].startswith("http://") or encryption_info['uri'].startswith("https://"):
-            key_url=encryption_info['uri']
-        else:
-            key_url = self.base_url + encryption_info["uri"]
-        self.key_path = self.download_key_file(key_url)
-        with open(self.key_path, "rb") as kf:
-            key = kf.read()
 
+        if "method" in encryption_info:
+            decrypt_flag = True
+            if encryption_info["uri"].startswith("http://") or encryption_info[
+                "uri"
+            ].startswith("https://"):
+                key_url = encryption_info["uri"]
+            else:
+                key_url = self.base_url + encryption_info["uri"]
+            self.key_path = self.download_key_file(key_url)
+            with open(self.key_path, "rb") as kf:
+                key = kf.read()
+            iv = binascii.unhexlify(encryption_info["iv"])
+        else:
+            decrypt_flag = False
+            key = None
+            iv = None
+
+        temp_path = os.path.join(self.base_path, "temp")
+        if not os.path.exists(temp_path):
+            os.makedirs(temp_path)
+            
         with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
             future_to_url = {
                 executor.submit(
-                    self.download_and_decrypt,
-                    ts_url,
-                    key,
-                    binascii.unhexlify(encryption_info["iv"]),
+                    self.download_and_decrypt, ts_url, key, iv, decrypt_flag
                 ): ts_url
                 for ts_url in ts_files
             }
@@ -149,14 +179,8 @@ class m3u8Download:
                 ts_url = future_to_url[future]
                 try:
                     decrypted_data = future.result()
-                    temp_path = os.path.join(self.base_path, "temp")
-                    if not os.path.exists(temp_path):
-                        os.makedirs(temp_path)
-                    if ts_url.startswith("http://") or ts_url.startswith("https://"):
-                        match = re.match(r'^.*?/([^/?]+)(?:\?.*)?$', ts_url)
-                        temp_ts_file = os.path.join(temp_path, match.group(1))
-                    else:
-                        temp_ts_file = os.path.join(temp_path, os.path.basename(ts_url))
+                    file_name=self.parse_file_name(ts_url)
+                    temp_ts_file = os.path.join(temp_path, file_name)
                     with open(temp_ts_file, "wb") as f:
                         f.write(decrypted_data)
                 except Exception as exc:
@@ -166,11 +190,8 @@ class m3u8Download:
         mp4_file_path = os.path.join(self.base_path, mp4_file)
         with open(mp4_file_path, "wb") as output:
             for ts_file in ts_files:
-                if ts_file.startswith("http://") or ts_file.startswith("https://"):
-                    match = re.match(r'^.*?/([^/?]+)(?:\?.*)?$', ts_file)
-                    temp_ts_file = os.path.join(temp_path, match.group(1))
-                else:
-                    temp_ts_file = os.path.join(temp_path, os.path.basename(ts_url))
+                file_name=self.parse_file_name(ts_file)
+                temp_ts_file = os.path.join(temp_path, file_name)
                 with open(temp_ts_file, "rb") as input:
                     output.write(input.read())
 
@@ -179,7 +200,7 @@ def main():
     parser.add_argument("--url", help="URL of the m3u8 file to download")
     parser.add_argument("--proxy", help="Proxy server address (optional)")
     parser.add_argument(
-        "--output-dir", help="Output directory for downloaded files (optional)"
+        "--output", help="Output directory for downloaded files (optional)"
     )
     args = parser.parse_args()
     downloader = m3u8Download(args.url)
@@ -190,12 +211,12 @@ def main():
                 "https": args.proxy,
             }
         )
-    if args.output_dir:
-        output_dir = args.output_dir
+    if args.output:
+        output_dir = args.output
     else:
         output_dir = None
     downloader.download(output_dir)
 
 
 if __name__ == "__main__":
-    main()
+     main()

@@ -1,11 +1,11 @@
 # M3U8 Downloader
 
 ---
-
+- Support unencrypted downloads
 - Support decryption AES-128
 - Progress bar display
 - Multithreading,Default 20 threads
-
+- Retry on error
 ## Usage
 
 ---
